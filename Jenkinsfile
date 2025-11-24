@@ -1,21 +1,15 @@
-// Jenkinsfile - Ready for your Next.js project
-// Assumptions:
-// - Kubernetes agent pod template contains a container named "node" with node/npm installed (as in your logs).
-// - Sonar token stored as Secret text with ID: sonar-token-2401062
-// - Firebase service account JSON stored as Secret text with ID: firebase-service-account
-// - SonarQube server entry in Jenkins Configure System named 'sonarqube' (or change withSonarQubeEnv name)
-// - If you want Docker push, create username/password credential with id 'nexus-creds' and set BUILD_DOCKER=true
+// Jenkinsfile - Final (fixed): Next.js + SonarQube + Firebase SA + optional Docker push
 
 pipeline {
   agent any
 
   environment {
-    SONAR_TOKEN = credentials('sonar-token-2401062')   // your Sonar token credential id
-    SONAR_HOST  = 'http://sonarqube.imcc.com'          // change if different
-    PROJECT_KEY = 'QIVO-interview-with-AI'            // change to your Sonar project key
+    SONAR_TOKEN = credentials('sonar-token-2401062')            // must exist in Jenkins
+    FIREBASE_SERVICE_ACCOUNT = credentials('firebase-service-account') // must exist
+    SONAR_HOST  = 'http://sonarqube.imcc.com'                  // update if needed
+    PROJECT_KEY = 'QIVO-interview-with-AI'                     // update if needed
     PROJECT_NAME = 'QIVO-interview-with-AI'
-    FIREBASE_SERVICE_ACCOUNT = credentials('firebase-service-account') // JSON secret (string)
-    DOCKER_IMAGE = "sonar-registry.example.com/qivo/interview-with-ai" // change for Nexus
+    DOCKER_IMAGE = "sonar-registry.example.com/qivo/interview-with-ai" // update if needed
   }
 
   stages {
@@ -36,8 +30,7 @@ pipeline {
     stage('Build') {
       steps {
         container('node') {
-          // If your app needs certain env like NEXT_PUBLIC_* for build, set them here via environment or credentials
-          // We pass FIREBASE_SERVICE_ACCOUNT as env so your app can parse it at build-time if required.
+          // Provide FIREBASE_SERVICE_ACCOUNT to build-time env
           withEnv(["FIREBASE_SERVICE_ACCOUNT=${env.FIREBASE_SERVICE_ACCOUNT}"]) {
             sh 'npm run build'
           }
@@ -48,12 +41,18 @@ pipeline {
     stage('Test & Coverage') {
       steps {
         container('node') {
-          // run tests; tolerates failing tests if you prefer sonar to still run
-          sh 'npm test -- --coverage || true'
+          // Run tests and output coverage + JUnit-compatible report if your test runner supports it
+          // Adjust commands to your test config if needed.
+          sh '''
+            # run tests (adjust for your test runner if different)
+            npm test -- --coverage || true
+
+            # if your test runner can output junit xml, move it to test-results/*.xml
+            # example: jest --outputFile=./test-results/junit.xml --reporters=default --reporters=jest-junit
+          '''
+          // Archive coverage and potential test result files (so artifacts available in Jenkins UI)
+          archiveArtifacts artifacts: 'coverage/**, test-results/**/*.xml', allowEmptyArchive: true
         }
-      }
-      post {
-        always { archiveArtifacts artifacts: 'coverage/**', allowEmptyArchive: true }
       }
     }
 
@@ -61,7 +60,7 @@ pipeline {
       steps {
         container('node') {
           withSonarQubeEnv('sonarqube') {
-            // If sonar-scanner is not installed, uncomment Docker-run alternative below
+            // If sonar-scanner binary not present in node image, use docker-run alternative (commented)
             sh '''
               sonar-scanner \
                 -Dsonar.projectKey=${PROJECT_KEY} \
@@ -72,7 +71,7 @@ pipeline {
                 -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info || true
             '''
             /*
-            # Docker alternative (if scanner not installed):
+            # Alternative: run sonar scanner via docker
             sh "docker run --rm -v \$(pwd):/usr/src -w /usr/src sonarsource/sonar-scanner-cli -Dsonar.projectKey=${PROJECT_KEY} -Dsonar.sources=. -Dsonar.host.url=${SONAR_HOST} -Dsonar.login=${SONAR_TOKEN} -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info"
             */
           }
@@ -92,8 +91,8 @@ pipeline {
       when { expression { return env.BUILD_DOCKER == 'true' } }
       steps {
         script {
-          // This step expects docker client available in agent (dind container), or adjust accordingly.
           withCredentials([usernamePassword(credentialsId: 'nexus-creds', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+            // Runs in agent; expects docker client available (dind)
             sh """
               docker build -t ${DOCKER_IMAGE}:${env.BUILD_NUMBER} .
               echo "$NEXUS_PASS" | docker login sonar-registry.example.com -u "$NEXUS_USER" --password-stdin
@@ -111,7 +110,8 @@ pipeline {
     success { echo "Build Succeeded" }
     failure { echo "Build Failed" }
     always {
-      junit allowEmptyResults: true, testResults: '**/test-results-*.xml'
+      // Keep logs only - avoid junit here as it needs workspace FilePath context
+      echo "Pipeline finished - check archived artifacts and console log for details."
     }
   }
 }

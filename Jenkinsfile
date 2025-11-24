@@ -1,4 +1,4 @@
-// Jenkinsfile - container('node') version (recommended)
+// Jenkinsfile - Final (container('node') version)
 pipeline {
   agent any
 
@@ -76,7 +76,6 @@ pipeline {
       steps {
         script {
           withCredentials([usernamePassword(credentialsId: 'nexus-creds', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
-            // run docker commands in dind container if you configure access, else adjust
             sh """
               docker build -t ${DOCKER_IMAGE}:${env.BUILD_NUMBER} .
               echo "$NEXUS_PASS" | docker login sonar-registry.example.com -u "$NEXUS_USER" --password-stdin
@@ -88,7 +87,7 @@ pipeline {
         }
       }
     }
-  }
+  } // stages
 
   post {
     success { echo "Build Succeeded" }

@@ -54,7 +54,7 @@ export async function signUp(params: SignUpParams) {
     console.error("Error creating user:", error);
 
     // Handle Firebase specific errors
-    if ((error as any).code === "auth/email-already-exists") {
+    if ((error as { code?: string }).code === "auth/email-already-exists") {
       return {
         success: false,
         message: "This email is already in use",
@@ -80,7 +80,7 @@ export async function signIn(params: SignInParams) {
       };
 
     await setSessionCookie(idToken);
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.log("");
 
     return {

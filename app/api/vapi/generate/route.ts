@@ -41,7 +41,7 @@ const interview = {
     await db.collection("interviews").add(interview);
 
     return Response.json({ success: true }, { status: 200 });
- } catch (error: any) {
+ } catch (error: unknown) {
   console.error("Error:", error);
 
   return Response.json(

@@ -19,6 +19,8 @@ pipeline {
 
     stage('Install Dependencies') {
       steps {
+        // If your pod template contains a container named "node" this will run there.
+        // If not, change to docker-run fallback (see comment below).
         container('node') {
           sh 'node --version || true'
           sh 'npm --version || true'
@@ -41,16 +43,7 @@ pipeline {
     stage('Test & Coverage') {
       steps {
         container('node') {
-          // Run tests and output coverage + JUnit-compatible report if your test runner supports it
-          // Adjust commands to your test config if needed.
-          sh '''
-            # run tests (adjust for your test runner if different)
-            npm test -- --coverage || true
-
-            # if your test runner can output junit xml, move it to test-results/*.xml
-            # example: jest --outputFile=./test-results/junit.xml --reporters=default --reporters=jest-junit
-          '''
-          // Archive coverage and potential test result files (so artifacts available in Jenkins UI)
+          sh 'npm test -- --coverage || true'
           archiveArtifacts artifacts: 'coverage/**, test-results/**/*.xml', allowEmptyArchive: true
         }
       }
@@ -60,7 +53,6 @@ pipeline {
       steps {
         container('node') {
           withSonarQubeEnv('sonarqube') {
-            // If sonar-scanner binary not present in node image, use docker-run alternative (commented)
             sh '''
               sonar-scanner \
                 -Dsonar.projectKey=${PROJECT_KEY} \
@@ -70,10 +62,6 @@ pipeline {
                 -Dsonar.login=${SONAR_TOKEN} \
                 -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info || true
             '''
-            /*
-            # Alternative: run sonar scanner via docker
-            sh "docker run --rm -v \$(pwd):/usr/src -w /usr/src sonarsource/sonar-scanner-cli -Dsonar.projectKey=${PROJECT_KEY} -Dsonar.sources=. -Dsonar.host.url=${SONAR_HOST} -Dsonar.login=${SONAR_TOKEN} -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info"
-            */
           }
         }
       }
@@ -92,7 +80,6 @@ pipeline {
       steps {
         script {
           withCredentials([usernamePassword(credentialsId: 'nexus-creds', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
-            // Runs in agent; expects docker client available (dind)
             sh """
               docker build -t ${DOCKER_IMAGE}:${env.BUILD_NUMBER} .
               echo "$NEXUS_PASS" | docker login sonar-registry.example.com -u "$NEXUS_USER" --password-stdin
@@ -104,14 +91,11 @@ pipeline {
         }
       }
     }
-  } // stages
+  }
 
   post {
     success { echo "Build Succeeded" }
     failure { echo "Build Failed" }
-    always {
-      // Keep logs only - avoid junit here as it needs workspace FilePath context
-      echo "Pipeline finished - check archived artifacts and console log for details."
-    }
+    always { echo "Pipeline finished - check archived artifacts and console log for details." }
   }
 }

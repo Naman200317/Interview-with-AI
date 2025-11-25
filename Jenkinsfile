@@ -45,20 +45,24 @@ spec:
   }
 
   environment {
-    // Replace these with your Jenkins credential IDs / values
-    SONAR_TOKEN = credentials('sonar-token-id')        // example credential id
-    FIREBASE_SERVICE_ACCOUNT = credentials('firebase-sa-json') // if used
-    DOCKER_REGISTRY = "your.registry.example.com"     // replace with your registry
-    DOCKER_CREDENTIALS = 'docker-credentials-id'      // Jenkins credential id for registry
+    // Your Sonar token credential already provided
+    SONAR_TOKEN = credentials('sonar-token-2401062')
+
+    // Replace this with your real SonarQube URL
+    SONAR_HOST_URL = "http://my-sonarqube.example.com:9000"
+
+    // Optional: configure docker registry & credentials if you want Docker stage
+    DOCKER_REGISTRY = "your.registry.example.com"
+    DOCKER_CREDENTIALS_ID = "docker-credentials-id"
   }
 
   options {
     timeout(time: 60, unit: 'MINUTES')
-    ansiColor('xterm')
     buildDiscarder(logRotator(numToKeepStr: '20'))
   }
 
   stages {
+
     stage('Checkout') {
       steps {
         container('jnlp') {
@@ -84,7 +88,7 @@ spec:
       steps {
         container('node') {
           sh '''
-            echo "Building project..."
+            echo "Building..."
             npm run build || true
           '''
         }
@@ -97,7 +101,6 @@ spec:
           sh '''
             echo "Running tests..."
             npm test -- --watchAll=false || true
-            # generate coverage artifact, e.g. coverage/lcov.info
           '''
         }
       }
@@ -114,35 +117,29 @@ spec:
     stage('SonarQube Analysis') {
       steps {
         container('node') {
-          withEnv(["SONAR_TOKEN=${env.SONAR_TOKEN}"]) {
-            // This assumes you have sonar-scanner installed in the node image or as npm script.
-            // Option A: use npm script that runs sonar-scanner (recommended)
-            sh '''
-              echo "Running SonarQube analysis..."
-              # npm run sonar or sonar-scanner command here
-              # example using sonar-scanner-cli docker or npm package:
-              # npx sonar-scanner \
-              #   -Dsonar.projectKey=your-project-key \
-              #   -Dsonar.host.url=${SONAR_HOST_URL} \
-              #   -Dsonar.login=${SONAR_TOKEN}
-            '''
-          }
+          sh """
+            echo 'Running SonarQube scanner...'
+            npx sonar-scanner \
+              -Dsonar.projectKey=Interview-with-AI \
+              -Dsonar.sources=. \
+              -Dsonar.host.url=${SONAR_HOST_URL} \
+              -Dsonar.login=${SONAR_TOKEN}
+          """
         }
       }
     }
 
     stage('Quality Gate') {
       steps {
-        // If you have SonarQube plugin and qualityGate configured, use waitForQualityGate
         script {
-          echo "Waiting for quality gate (if configured)..."
-          // wrap this in a try-catch if plugin not available:
+          echo "Waiting for SonarQube Quality Gate (if configured in Jenkins)..."
           try {
-            timeout(time: 3, unit: 'MINUTES') {
+            // requires SonarQube Jenkins plugin and properly configured Sonar server in Jenkins
+            timeout(time: 5, unit: 'MINUTES') {
               waitForQualityGate abortPipeline: true
             }
           } catch (err) {
-            echo "waitForQualityGate not available or timed out: ${err}"
+            echo "waitForQualityGate not available / timed out or failed: ${err}"
           }
         }
       }
@@ -150,18 +147,13 @@ spec:
 
     stage('Docker: build & push (optional)') {
       when {
-        expression { return env.DOCKER_REGISTRY != null && env.DOCKER_REGISTRY != '' }
+        expression { return env.DOCKER_REGISTRY && env.DOCKER_REGISTRY != '' }
       }
       steps {
-        script {
-          // use the dind container to run docker build/push
-          container('dind') {
+        container('dind') {
+          withCredentials([usernamePassword(credentialsId: "${env.DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
             sh '''
-              echo "Logging into Docker registry..."
-              # Configure docker auth via docker login using docker credentials - using Jenkins credential
-              docker --version || true
-              # Using docker CLI with credential helper is recommended; below is a simple example:
-              echo "$DOCKER_PASSWORD" | docker login ${DOCKER_REGISTRY} -u "$DOCKER_USERNAME" --password-stdin
+              echo "$DOCKER_PASS" | docker login ${DOCKER_REGISTRY} -u "$DOCKER_USER" --password-stdin
               docker build -t ${DOCKER_REGISTRY}/my-app:${BUILD_NUMBER} .
               docker push ${DOCKER_REGISTRY}/my-app:${BUILD_NUMBER}
             '''
@@ -169,20 +161,12 @@ spec:
         }
       }
     }
-  }
+
+  } // stages
 
   post {
-    success {
-      echo "Pipeline succeeded."
-    }
-    failure {
-      echo "Pipeline failed - check console output."
-    }
-    always {
-      script {
-        // archive logs, artifacts or notify
-        echo "Cleaning up / final steps"
-      }
-    }
+    success { echo "Pipeline succeeded!" }
+    failure { echo "Pipeline failed - check console output." }
+    always { echo "Pipeline finished." }
   }
 }

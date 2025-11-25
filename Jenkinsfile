@@ -1,9 +1,8 @@
-// Jenkinsfile (Declarative) - Kubernetes inline YAML pod template
 pipeline {
   agent {
     kubernetes {
       label 'k8s-node-agent'
-      defaultContainer 'jnlp'
+      defaultContainer 'node'
       yaml """
 apiVersion: v1
 kind: Pod
@@ -14,29 +13,16 @@ spec:
     command: ['cat']
     tty: true
     workingDir: /home/jenkins/agent
-    resources:
-      requests:
-        memory: "512Mi"
-        cpu: "250m"
-      limits:
-        memory: "1Gi"
-        cpu: "500m"
-  - name: dind
-    image: docker:dind
-    command: ['dockerd-entrypoint.sh']
-    securityContext:
-      privileged: true
-    tty: false
-    resources:
-      requests:
-        memory: "1Gi"
-        cpu: "500m"
-      limits:
-        memory: "4Gi"
-        cpu: "1"
+
+  - name: sonar-scanner
+    image: sonarsource/sonar-scanner-cli:latest
+    command: ['cat']
+    tty: true
+
   - name: jnlp
     image: jenkins/inbound-agent:latest
     tty: true
+
   volumes:
   - name: workspace-volume
     emptyDir: {}
@@ -45,20 +31,13 @@ spec:
   }
 
   environment {
-    // Your Sonar token credential already provided
     SONAR_TOKEN = credentials('sonar-token-2401062')
-
-    // Replace this with your real SonarQube URL
-    SONAR_HOST_URL = "http://my-sonarqube.example.com:9000"
-
-    // Optional: configure docker registry & credentials if you want Docker stage
-    DOCKER_REGISTRY = "your.registry.example.com"
-    DOCKER_CREDENTIALS_ID = "docker-credentials-id"
+    SONAR_HOST_URL = "http://my-sonarqube.example.com:9000"   // <-- replace with real Sonar URL
   }
 
   options {
     timeout(time: 60, unit: 'MINUTES')
-    buildDiscarder(logRotator(numToKeepStr: '20'))
+    buildDiscarder(logRotator(numToKeepStr: '15'))
   }
 
   stages {
@@ -76,55 +55,76 @@ spec:
         container('node') {
           sh '''
             echo "Installing dependencies..."
-            node --version || true
-            npm --version || true
             npm ci --silent
           '''
         }
       }
     }
 
-    stage('Build') {
+    stage('Build (Next.js)') {
       steps {
         container('node') {
           sh '''
-            echo "Building..."
-            npm run build || true
+            echo "Running Next.js build..."
+            npm run build
           '''
         }
       }
     }
 
-    stage('Test & Coverage') {
+    stage('Test (skip if no test script)') {
       steps {
         container('node') {
           sh '''
-            echo "Running tests..."
-            npm test -- --watchAll=false || true
+            if node -e "process.exit(!(require('./package.json').scripts?.test))"; then
+              echo "Running tests..."
+              npm test -- --watchAll=false
+            else
+              echo "No test script found. Skipping."
+            fi
           '''
         }
       }
-      post {
-        always {
-          container('jnlp') {
-            archiveArtifacts artifacts: 'coverage/**', allowEmptyArchive: true
-            junit allowEmptyResults: true, testResults: 'reports/**/*.xml'
+    }
+
+    // ===========================
+    // Firebase validation (DISABLED for now)
+    // Enable after you add firebase-sa-json
+    // ===========================
+    /*
+    stage('Validate Firebase JSON') {
+      steps {
+        withCredentials([file(credentialsId: 'firebase-sa-json', variable: 'FIREBASE_SA')]) {
+          container('node') {
+            sh '''
+              echo "Checking Firebase JSON..."
+              node -e "
+                  const fs=require('fs');
+                  const j=JSON.parse(fs.readFileSync(process.env.FIREBASE_SA));
+                  if(!j.project_id){throw new Error('project_id missing');}
+              "
+            '''
           }
         }
       }
     }
+    */
 
     stage('SonarQube Analysis') {
       steps {
-        container('node') {
-          sh """
-            echo 'Running SonarQube scanner...'
-            npx sonar-scanner \
-              -Dsonar.projectKey=Interview-with-AI \
-              -Dsonar.sources=. \
-              -Dsonar.host.url=${SONAR_HOST_URL} \
-              -Dsonar.login=${SONAR_TOKEN}
-          """
+        container('sonar-scanner') {
+          withEnv(["SONAR_HOST_URL=${env.SONAR_HOST_URL}"]) {
+            sh '''
+              echo "Running SonarQube scanner..."
+              export SONAR_LOGIN="$SONAR_TOKEN"
+
+              sonar-scanner \
+                -Dsonar.projectKey=Interview-with-AI \
+                -Dsonar.sources=. \
+                -Dsonar.host.url=$SONAR_HOST_URL \
+                -Dsonar.login=$SONAR_LOGIN
+            '''
+          }
         }
       }
     }
@@ -132,31 +132,13 @@ spec:
     stage('Quality Gate') {
       steps {
         script {
-          echo "Waiting for SonarQube Quality Gate (if configured in Jenkins)..."
+          echo "Checking quality gate..."
           try {
-            // requires SonarQube Jenkins plugin and properly configured Sonar server in Jenkins
-            timeout(time: 5, unit: 'MINUTES') {
+            timeout(time: 3, unit: 'MINUTES') {
               waitForQualityGate abortPipeline: true
             }
-          } catch (err) {
-            echo "waitForQualityGate not available / timed out or failed: ${err}"
-          }
-        }
-      }
-    }
-
-    stage('Docker: build & push (optional)') {
-      when {
-        expression { return env.DOCKER_REGISTRY && env.DOCKER_REGISTRY != '' }
-      }
-      steps {
-        container('dind') {
-          withCredentials([usernamePassword(credentialsId: "${env.DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-            sh '''
-              echo "$DOCKER_PASS" | docker login ${DOCKER_REGISTRY} -u "$DOCKER_USER" --password-stdin
-              docker build -t ${DOCKER_REGISTRY}/my-app:${BUILD_NUMBER} .
-              docker push ${DOCKER_REGISTRY}/my-app:${BUILD_NUMBER}
-            '''
+          } catch (e) {
+            echo "Quality gate skipped/not configured: ${e}"
           }
         }
       }
@@ -165,8 +147,7 @@ spec:
   } // stages
 
   post {
-    success { echo "Pipeline succeeded!" }
-    failure { echo "Pipeline failed - check console output." }
-    always { echo "Pipeline finished." }
+    success { echo "Pipeline SUCCESS 🎉" }
+    failure { echo "Pipeline FAILED ❌ — check console logs." }
   }
 }
